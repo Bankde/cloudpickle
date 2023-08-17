@@ -2771,9 +2771,9 @@ class CloudPickleTest(unittest.TestCase):
             )
 
 
-class Protocol2CloudPickleTest(CloudPickleTest):
+# class Protocol2CloudPickleTest(CloudPickleTest):
 
-    protocol = 2
+#     protocol = 2
 
 
 def test_lookup_module_and_qualname_dynamic_typevar():

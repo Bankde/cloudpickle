@@ -763,10 +763,12 @@ def _fill_function(*args):
     return func
 
 
-def _make_function(code, globals, name, argdefs, closure):
-    # Setting __builtins__ in globals is needed for nogil CPython.
-    globals["__builtins__"] = __builtins__
-    return types.FunctionType(code, globals, name, argdefs, closure)
+def _make_function_from_src(src, objname, scope={}):
+    """
+    Other global scopes/variables will be set in function setstate
+    """
+    exec(src, scope)
+    return scope[objname]
 
 
 def _make_empty_cell():

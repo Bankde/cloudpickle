@@ -21,6 +21,8 @@ import struct
 import types
 import weakref
 import typing
+import inspect
+import textwrap
 
 from enum import Enum
 from collections import ChainMap, OrderedDict
@@ -35,9 +37,13 @@ from .cloudpickle import (
     _is_parametrized_type_hint, PYPY, cell_set,
     parametrized_type_hint_getinitargs, _create_parametrized_type_hint,
     builtin_code_type,
-    _make_dict_keys, _make_dict_values, _make_dict_items, _make_function,
+    _make_dict_keys, _make_dict_values, _make_dict_items, _make_function_from_src,
 )
 
+CONFIG_GET_IMPORT = False
+def set_config_get_import(bool):
+    global CONFIG_GET_IMPORT
+    CONFIG_GET_IMPORT = bool
 
 if pickle.HIGHEST_PROTOCOL >= 5:
     # Shorthands similar to pickle.dump/pickle.dumps
@@ -71,7 +77,10 @@ if pickle.HIGHEST_PROTOCOL >= 5:
                 file, protocol=protocol, buffer_callback=buffer_callback
             )
             cp.dump(obj)
-            return file.getvalue()
+            if CONFIG_GET_IMPORT:
+                return file.getvalue(), cp.getImportList()
+            else:
+                return file.getvalue()
 
 else:
     # Shorthands similar to pickle.dump/pickle.dumps
@@ -100,7 +109,10 @@ else:
         with io.BytesIO() as file:
             cp = CloudPickler(file, protocol=protocol)
             cp.dump(obj)
-            return file.getvalue()
+            if CONFIG_GET_IMPORT:
+                return file.getvalue(), cp.getImportList()
+            else:
+                return file.getvalue()
 
 
 load, loads = pickle.load, pickle.loads
@@ -163,6 +175,15 @@ def _function_getstate(func):
         if func.__closure__ is not None else ()
     )
 
+    # Get closure variables map
+    # This is an extension to the cloudpickle due to exec(code) will naturally
+    # convert most relevant LOAD_DEREF (closure ref OP) to LOAD_GLOBAL, we have
+    # to convert closures to globals.
+    # This theoretically means that exec(code) MAY YIELD INCORRECT result and
+    # can be considered as a hard limitation.
+    code = func.__code__
+    closure_map = {code.co_freevars[i]: _get_cell_contents(func.__closure__[i]) for i in range(len(code.co_freevars))}
+
     # Extract currently-imported submodules used by func. Storing these modules
     # in a smoke _cloudpickle_subimports attribute of the object's state will
     # trigger the side effect of importing these modules at unpickling time
@@ -171,8 +192,17 @@ def _function_getstate(func):
         func.__code__, itertools.chain(f_globals.values(), closure_values))
     slotstate["__globals__"] = f_globals
 
+    # Iterate globals and closures for any modules object, save their names.
+    # Also normalize out submodule because pyodide doesn't use those.
+    modules = set()
+    for var in itertools.chain(f_globals.values(), closure_values):
+        if isinstance(var, types.ModuleType):
+            mod_name = var.__name__.split(".")[0]
+            if mod_name not in sys.builtin_module_names and f"_${mod_name}" not in sys.builtin_module_names:
+                modules.add(mod_name)
+
     state = func.__dict__
-    return state, slotstate
+    return (state, slotstate, closure_map), modules
 
 
 def _class_getstate(obj):
@@ -495,7 +525,7 @@ def _function_setstate(obj, state):
     cannot rely on the native setstate routine of pickle.load_build, that calls
     setattr on items of the slotstate. Instead, we have to modify them inplace.
     """
-    state, slotstate = state
+    state, slotstate, closure_map = state
     obj.__dict__.update(state)
 
     obj_globals = slotstate.pop("__globals__")
@@ -510,13 +540,17 @@ def _function_setstate(obj, state):
     obj.__globals__.update(obj_globals)
     obj.__globals__["__builtins__"] = __builtins__
 
-    if obj_closure is not None:
-        for i, cell in enumerate(obj_closure):
-            try:
-                value = cell.cell_contents
-            except ValueError:  # cell is empty
-                continue
-            cell_set(obj.__closure__[i], value)
+    # Closure doesn't work for exec(code)
+    # if obj_closure is not None:
+    #     for i, cell in enumerate(obj_closure):
+    #         try:
+    #             value = cell.cell_contents
+    #         except ValueError:  # cell is empty
+    #             continue
+    #         cell_set(obj.__closure__[i], value)
+
+    # Add closure variables to globals
+    obj.__globals__.update(closure_map)
 
     for k, v in slotstate.items():
         setattr(obj, k, v)
@@ -570,11 +604,21 @@ class CloudPickler(Pickler):
 
     # function reducers are defined as instance methods of CloudPickler
     # objects, as they rely on a CloudPickler attribute (globals_ref)
-    def _dynamic_function_reduce(self, func):
-        """Reduce a function that is not pickleable via attribute lookup."""
-        newargs = self._function_getnewargs(func)
-        state = _function_getstate(func)
-        return (_make_function, newargs, state, None, None,
+    def _dynamic_function_reduce_as_src(self, func):
+        """
+        Textwrap.dedent remove common leading whitespace
+        This is to normalize the whitespace when function locates in class/loop/if/etc.
+        """
+        src = textwrap.dedent(inspect.getsource(func))
+        objname = func.__name__
+        # Shared the initial scope to allow sharing global variables 
+        # across functions as long as they are pickled in the same pickle session
+        scope = self._function_get_shared_globals(func)
+        state, modules = _function_getstate(func)
+        newargs = (src, objname, scope, )
+        # Get submodules, no need to run it again
+        self.moduleList.update(modules)
+        return (_make_function_from_src, newargs, state, None, None,
                 _function_setstate)
 
     def _function_reduce(self, obj):
@@ -592,11 +636,9 @@ class CloudPickler(Pickler):
         if _should_pickle_by_reference(obj):
             return NotImplemented
         else:
-            return self._dynamic_function_reduce(obj)
+            return self._dynamic_function_reduce_as_src(obj)
 
-    def _function_getnewargs(self, func):
-        code = func.__code__
-
+    def _function_get_shared_globals(self, func):
         # base_globals represents the future global namespace of func at
         # unpickling time. Looking it up and storing it in
         # CloudpiPickler.globals_ref allow functions sharing the same globals
@@ -617,15 +659,7 @@ class CloudPickler(Pickler):
                 if k in func.__globals__:
                     base_globals[k] = func.__globals__[k]
 
-        # Do not bind the free variables before the function is created to
-        # avoid infinite recursion.
-        if func.__closure__ is None:
-            closure = None
-        else:
-            closure = tuple(
-                _make_empty_cell() for _ in range(len(code.co_freevars)))
-
-        return code, base_globals, None, None, closure
+        return base_globals
 
     def dump(self, obj):
         try:
@@ -640,6 +674,9 @@ class CloudPickler(Pickler):
             else:
                 raise
 
+    def getImportList(self):
+        return list(self.moduleList)
+
     if pickle.HIGHEST_PROTOCOL >= 5:
         def __init__(self, file, protocol=None, buffer_callback=None):
             if protocol is None:
@@ -652,6 +689,8 @@ class CloudPickler(Pickler):
             # their global namespace at unpickling time.
             self.globals_ref = {}
             self.proto = int(protocol)
+            # Module list for Volpy
+            self.moduleList = set()
     else:
         def __init__(self, file, protocol=None):
             if protocol is None:
@@ -662,6 +701,8 @@ class CloudPickler(Pickler):
             # their global namespace at unpickling time.
             self.globals_ref = {}
             assert hasattr(self, 'proto')
+            # Module list for Volpy
+            self.moduleList = set()
 
     if pickle.HIGHEST_PROTOCOL >= 5 and not PYPY:
         # Pickler is the C implementation of the CPython pickler and therefore
@@ -816,7 +857,7 @@ class CloudPickler(Pickler):
                 return self.save_pypy_builtin_func(obj)
             else:
                 return self._save_reduce_pickle5(
-                    *self._dynamic_function_reduce(obj), obj=obj
+                    *self._dynamic_function_reduce_as_src(obj), obj=obj
                 )
 
         def save_pypy_builtin_func(self, obj):
