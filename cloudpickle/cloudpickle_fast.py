@@ -541,14 +541,6 @@ def _function_setstate(obj, state):
     obj.__globals__["__builtins__"] = __builtins__
 
     # Closure doesn't work for exec(code)
-    # if obj_closure is not None:
-    #     for i, cell in enumerate(obj_closure):
-    #         try:
-    #             value = cell.cell_contents
-    #         except ValueError:  # cell is empty
-    #             continue
-    #         cell_set(obj.__closure__[i], value)
-
     # Add closure variables to globals
     obj.__globals__.update(closure_map)
 
