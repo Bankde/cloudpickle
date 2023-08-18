@@ -601,7 +601,14 @@ class CloudPickler(Pickler):
         Textwrap.dedent remove common leading whitespace
         This is to normalize the whitespace when function locates in class/loop/if/etc.
         """
-        src = textwrap.dedent(inspect.getsource(func))
+        try:
+             src = textwrap.dedent(inspect.getsource(func))
+        except OSError as e:
+            # Check if there is a source code cached
+            if hasattr(func, "__codepickle_src__"):
+                src = func.__codepickle_src__
+            else:
+                raise pickle.PicklingError("Unable to retreive source code: %s" % (func)) from e
         objname = func.__name__
         # Shared the initial scope to allow sharing global variables 
         # across functions as long as they are pickled in the same pickle session
