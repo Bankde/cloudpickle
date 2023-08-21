@@ -767,6 +767,7 @@ def _make_function_from_src(src, objname, scope={}):
     """
     Other global scopes/variables will be set in function setstate
     """
+    assert(not isinstance(src, types.CodeType))
     try:
         exec(src, scope)
     except OSError as e:
