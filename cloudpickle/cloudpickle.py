@@ -44,6 +44,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 import builtins
 import dis
 import opcode
+import ast
 import platform
 import sys
 import types
@@ -768,7 +769,10 @@ def _make_function_from_src(src, objname, scope={}):
     Other global scopes/variables will be set in function setstate
     """
     try:
-        exec(src, scope)
+        # Remove any 1st-level decorator from the function
+        tree = ast.parse(src)
+        tree.body[0].decorator_list = []
+        exec(compile(tree, filename="<ast>", mode="exec"), scope)
     except OSError as e:
         raise pickle.PicklingError("Unable to exec code: %s\n%s\n" % (objname, src)) from e
     return scope[objname]
