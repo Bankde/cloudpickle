@@ -8,6 +8,7 @@ Pickler = CloudPickler
 __version__ = '2.2.1'
 
 import builtins
+import types
 builtin_exec = builtins.exec
 def new_exec(*args, **kwargs):
     glob = None
@@ -22,7 +23,7 @@ def new_exec(*args, **kwargs):
     elif len(args) >= 2:
         glob = args[1]
 
-    if not glob and not loc:
+    if isinstance(src, types.CodeType) or (not glob and not loc):
         # nothing is provided, this case won't be a problem
         builtin_exec(*args, **kwargs)
         return None

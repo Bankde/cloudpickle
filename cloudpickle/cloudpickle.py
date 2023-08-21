@@ -768,6 +768,7 @@ def _make_function_from_src(src, objname, scope={}):
     """
     Other global scopes/variables will be set in function setstate
     """
+    assert(not isinstance(src, types.CodeType))
     try:
         # Remove any 1st-level decorator from the function
         tree = ast.parse(src)
