@@ -776,7 +776,10 @@ def _make_function_from_src(src, objname, scope={}):
         exec(compile(tree, filename="<ast>", mode="exec"), scope)
     except OSError as e:
         raise pickle.PicklingError("Unable to exec code: %s\n%s\n" % (objname, src)) from e
-    return scope[objname]
+    ret_func = scope[objname]
+    # Since we put CodeType into exec, we have to manually append src cache here.
+    ret_func.__codepickle_src__ = src
+    return ret_func
 
 
 def _make_empty_cell():
