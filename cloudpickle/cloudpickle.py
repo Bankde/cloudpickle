@@ -767,7 +767,10 @@ def _make_function_from_src(src, objname, scope={}):
     """
     Other global scopes/variables will be set in function setstate
     """
-    exec(src, scope)
+    try:
+        exec(src, scope)
+    except OSError as e:
+        raise pickle.PicklingError("Unable to exec code: %s\n%s\n" % (objname, src)) from e
     return scope[objname]
 
 
