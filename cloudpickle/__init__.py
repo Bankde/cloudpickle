@@ -23,11 +23,11 @@ def new_exec(*args, **kwargs):
     elif len(args) >= 2:
         glob = args[1]
 
-    if isinstance(src, types.CodeType) or (not glob and not loc):
+    if isinstance(src, types.CodeType) or (glob == None and loc == None):
         # nothing is provided, this case won't be a problem
         builtin_exec(*args, **kwargs)
         return None
-    elif glob and not loc:
+    elif glob and (loc == None):
         # locals is not provided
         # save pre-exec glob, exec, put code-cache on any new glob variables.
         pre_glob = glob.copy()
